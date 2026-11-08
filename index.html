@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Joan's Hallway</title>
+<style>
+  /* Layout: one 16:9 stage, always letterboxed on black. Scenes dissolve into each other;
+     the choice is only two pulsing spots on the picture, each revealing its option on hover. */
+  :root {
+    color-scheme: dark;
+    --bg: #000;
+    --fg: #fff;
+    --accent: #5eead4;
+    --bad: #f87171;
+    --good: #4ade80;
+    --glass: rgba(18, 22, 28, .82);
+    --glass-line: rgba(255, 255, 255, .3);
+    --fade: 1.4s;     /* set from FADE_SECONDS in the script */
+    --xfade: 1.2s;    /* set from XFADE in the script */
+  }
+  * { box-sizing: border-box; }
+  html { height: 100%; box-sizing: border-box; }
+  body {
+    height: 100%; margin: 0; display: grid; place-items: center; overflow: hidden;
+    container-type: size;
+    background: var(--bg); color: var(--fg);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  button { font: inherit; color: inherit; }
+
+  /* ---------- player + stage (always 16:9) ---------- */
+  .player { position: relative; isolation: isolate; width: min(100cqw, 100cqh * 16 / 9); }
+  .stage  { position: relative; aspect-ratio: 16 / 9; width: 100%; overflow: hidden; background: var(--bg); container-type: inline-size; }
+  .cover  { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+
+  /* The four picture layers. Showing one = it fades in on top of the others (a dissolve);
+     the others are switched off once it is fully opaque. */
+  .layer { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; }
+  .layer.on { opacity: 1; transition: opacity var(--dur, 1.2s) ease; }
+  video.layer { pointer-events: none; background: var(--bg); }
+
+  /* ---------- start screen ---------- */
+  .intro { position: absolute; inset: 0; z-index: 8; display: grid; place-items: center; transition: opacity .8s ease; }
+  .intro::after { content: ""; position: absolute; inset: 0; background: rgba(0, 0, 0, .35); }
+  .player:not([data-state="intro"]) .intro { opacity: 0; visibility: hidden; pointer-events: none; transition: opacity .8s ease, visibility 0s .8s; }
+  .start {
+    position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; gap: 12px;
+    background: none; border: 0; cursor: pointer;
+    font-weight: 600; letter-spacing: .1em; text-transform: uppercase;
+  }
+  .start .disc {
+    display: grid; place-items: center; width: clamp(64px, 9cqw, 104px); aspect-ratio: 1; border-radius: 50%;
+    background: rgba(255, 255, 255, .92); color: #111; box-shadow: 0 8px 30px rgba(0, 0, 0, .45);
+    transition: transform .2s;
+  }
+  .start .disc svg { width: 42%; margin-left: 6%; }
+  .start:hover .disc { transform: scale(1.08); }
+  .start:focus-visible { outline: 3px solid #fff; outline-offset: 10px; border-radius: 14px; }
+
+  /* ---------- the two spots ---------- */
+  .hotspot {
+    --spot: clamp(40px, 5.5cqw, 64px);
+    position: absolute; z-index: 5; width: var(--spot); height: var(--spot);
+    margin: calc(var(--spot) / -2) 0 0 calc(var(--spot) / -2);
+    padding: 0; border: 0; border-radius: 50%; background: transparent; cursor: pointer;
+    opacity: 0; visibility: hidden; transition: opacity .5s ease, visibility 0s .5s;
+  }
+  .player[data-state="decision"] .hotspot {
+    opacity: 1; visibility: visible; transition: opacity .9s ease var(--xfade), visibility 0s var(--xfade);
+  }
+  .hotspot .dot {
+    position: absolute; inset: 32%; border-radius: 50%; background: #fff;
+    box-shadow: 0 0 0 2px rgba(0, 0, 0, .3), 0 2px 10px rgba(0, 0, 0, .35); transition: transform .2s, background .2s;
+  }
+  .hotspot::after {                         /* the pulse */
+    content: ""; position: absolute; inset: 0; border-radius: 50%; border: 2px solid rgba(255, 255, 255, .9);
+    animation: pulse 1.8s ease-out infinite;
+  }
+  .hotspot:hover .dot, .hotspot:focus-visible .dot { transform: scale(1.45); background: var(--accent); }
+  .hotspot:focus-visible { outline: 3px solid #fff; outline-offset: 3px; }
+
+  /* the option text, shown while the pointer (or keyboard focus) is on the spot */
+  .tip {
+    position: absolute; top: 50%; z-index: 1; width: max-content; max-width: var(--tip-max, 34cqw);
+    padding: .55em .9em; border-radius: 12px; text-align: left;
+    font-size: clamp(12px, 1.75cqw, 21px); font-weight: 600; line-height: 1.3;
+    background: var(--glass); border: 1px solid var(--glass-line);
+    -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+    opacity: 0; visibility: hidden; pointer-events: none;
+    transform: translate(var(--tip-shift, 0), -50%);
+    transition: opacity .2s ease, transform .2s ease, visibility 0s .2s;
+  }
+  .hotspot[data-side="left"]  .tip { right: calc(100% - 8px); --tip-shift: 8px; }
+  .hotspot[data-side="right"] .tip { left:  calc(100% - 8px); --tip-shift: -8px; }
+  .hotspot:hover .tip, .hotspot:focus-visible .tip {
+    opacity: 1; visibility: visible; transform: translate(0, -50%); transition: opacity .2s ease, transform .2s ease, visibility 0s;
+  }
+  @media (hover: none) {                    /* touch screens have no hover: keep the text visible */
+    .tip { opacity: 1; visibility: inherit; transform: translate(0, -50%); }
+  }
+
+  /* ---------- fade to black + ending text ---------- */
+  #fade { position: absolute; inset: 0; z-index: 6; background: var(--bg); opacity: 0; pointer-events: none; transition: opacity var(--fade) linear; }
+  #fade.on { opacity: 1; }
+
+  .end { position: absolute; inset: 0; z-index: 7; display: none; flex-direction: column; align-items: center; justify-content: center; gap: clamp(20px, 4cqw, 44px); text-align: center; padding: 0 5%; }
+  .player[data-state="end"] .end { display: flex; }
+  .end h2 {
+    margin: 0; font-size: clamp(34px, 7cqw, 92px); font-weight: 700; letter-spacing: .01em; line-height: 1.1; text-wrap: balance;
+    opacity: 0; transform: scale(.97); transition: opacity 1s ease, transform 1.6s ease;
+  }
+  .end h2::after { content: ""; display: block; width: 72px; height: 4px; margin: clamp(14px, 2cqw, 22px) auto 0; border-radius: 2px; background: var(--fg); }
+  .end[data-tone="bad"]  h2::after { background: var(--bad); }
+  .end[data-tone="good"] h2::after { background: var(--good); }
+  .end.show h2 { opacity: 1; transform: none; }
+  .again {
+    padding: 12px 28px; border-radius: 999px; cursor: pointer; font-weight: 600; letter-spacing: .06em;
+    background: transparent; border: 1px solid rgba(255, 255, 255, .55);
+    opacity: 0; visibility: hidden;
+    transition: opacity .5s ease, visibility 0s .5s, background .2s, border-color .2s;
+  }
+  .end.show .again { opacity: 1; visibility: visible; transition: opacity .6s ease 1.6s, visibility 0s 1.6s, background .2s, border-color .2s; }
+  .again:hover { background: rgba(255, 255, 255, .12); border-color: #fff; }
+  .again:focus-visible { outline: 3px solid #fff; outline-offset: 3px; }
+
+  @keyframes pulse { 0% { transform: scale(.4); opacity: 1; } 100% { transform: scale(1.2); opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { .hotspot::after { animation: none; } }
+</style>
+</head>
+<body>
+<main class="player" id="player" data-state="intro">
+
+  <div class="stage">
+    <!-- decision background -->
+    <img class="layer" id="bg" src="assets/background-options.jpg"
+         alt="Joan, an elderly woman in a blue cardigan, stands in the hallway holding her walking frame.">
+
+    <!-- scene 1, then one video per option (each option = its two clips joined with a dissolve) -->
+    <video class="layer" id="v-scene" src="assets/scene-1.mp4"  playsinline preload="auto"></video>
+    <video class="layer" id="v-opt1"  src="assets/option-1.mp4" playsinline preload="auto"></video>
+    <video class="layer" id="v-opt2"  src="assets/option-2.mp4" playsinline preload="auto"></video>
+
+    <!-- The two spots. left/top = position on the picture in %; data-side = which side the text opens on.
+         The option text is edited here (aria-label and .tip). -->
+    <button class="hotspot" data-choice="1" data-side="left" type="button"
+            style="left:36%; top:14%; --tip-max:32cqw" aria-label="Leave your coat and go and make the food">
+      <span class="dot"></span><span class="tip" aria-hidden="true">Leave your coat and go and make the food</span>
+    </button>
+    <button class="hotspot" data-choice="2" data-side="right" type="button"
+            style="left:43%; top:50%; --tip-max:40cqw" aria-label="Check how Joan is">
+      <span class="dot"></span><span class="tip" aria-hidden="true">Check how Joan is</span>
+    </button>
+
+    <div id="fade"></div>
+
+    <div class="end" id="end" aria-live="polite">
+      <h2 id="end-text"></h2>
+      <button class="again" id="again" type="button">Try again</button>
+    </div>
+
+    <div class="intro">
+      <img class="cover" src="assets/scene-1-poster.jpg" alt="">
+      <button class="start" id="start" type="button">
+        <span class="disc"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3l16 9-16 9z" fill="currentColor"/></svg></span>
+        <span>Start</span>
+      </button>
+    </div>
+  </div>
+
+</main>
+
+<script>
+(() => {
+  'use strict';
+
+  /* ---- settings ---- */
+  const XFADE = 1.2;          // seconds: dissolve between scenes (scene 1 -> choice -> option video -> choice)
+  const FADE_SECONDS = 1.4;   // seconds: fade to black at the end of each option's video
+  const ENDINGS = {           // text shown in the centre after the fade
+    1: { text: 'Bad decision',    tone: 'bad'  },
+    2: { text: 'Congratulations', tone: 'good' },
+  };
+
+  /* ---- elements ---- */
+  const $ = s => document.querySelector(s);
+  const player = $('#player'), fade = $('#fade'), end = $('#end'), endText = $('#end-text');
+  const startBtn = $('#start'), againBtn = $('#again');
+  const bg = $('#bg');
+  const sceneVideo = $('#v-scene');
+  const optVideo = { 1: $('#v-opt1'), 2: $('#v-opt2') };
+  const allVideos = [sceneVideo, optVideo[1], optVideo[2]];
+  const layers = [bg, ...allVideos];
+
+  const root = document.documentElement.style;
+  root.setProperty('--fade', FADE_SECONDS + 's');
+  root.setProperty('--xfade', XFADE + 's');
+
+  /* ---- helpers ---- */
+  const stateOf = () => player.dataset.state;
+  const setState = s => { player.dataset.state = s; };
+  const wait = ms => new Promise(r => setTimeout(r, ms));
+
+  // Dissolve: bring `el` in on top, fading over `sec` seconds, then switch every other layer off.
+  let seq = 0;
+  function show(el, sec = XFADE) {
+    const mine = ++seq;
+    layers.forEach(l => { if (l !== el && l.classList.contains('on')) l.style.zIndex = 1; });
+    el.style.setProperty('--dur', sec + 's');
+    el.style.zIndex = 2;
+    el.classList.add('on');
+    return wait(sec * 1000 + 60).then(() => {
+      if (mine !== seq) return;
+      layers.forEach(l => { if (l !== el) { l.classList.remove('on'); l.style.zIndex = 0; } });
+      el.style.zIndex = 1;
+    });
+  }
+
+  // Resolves once the first frame is actually playing (so we never flash black).
+  // play() is called synchronously, i.e. still inside the user's click.
+  function playVideo(v) {
+    return new Promise((resolve, reject) => {
+      v.addEventListener('playing', resolve, { once: true });
+      const p = v.play();
+      if (p && p.catch) p.catch(reject);
+    });
+  }
+
+  function whenEnded(v, onFrame) {
+    return new Promise(resolve => {
+      let raf = 0;
+      const loop = () => { onFrame && onFrame(); raf = requestAnimationFrame(loop); };
+      v.addEventListener('ended', () => { cancelAnimationFrame(raf); resolve(); }, { once: true });
+      if (onFrame) raf = requestAnimationFrame(loop);
+    });
+  }
+
+  /* ---- flow ---- */
+  // 1. Scene 1 plays; in its last seconds it DISSOLVES into the still with the two spots.
+  async function runScene() {
+    if (stateOf() !== 'intro') return;
+    try { await playVideo(sceneVideo); }
+    catch (e) { console.warn('Playback blocked', e); return; }
+    show(sceneVideo, 0);
+    setState('scene');                          // the start screen fades away
+
+    let crossed = false;
+    const toChoice = () => {
+      if (crossed) return;
+      crossed = true;
+      setState('decision');                     // spots fade in once the dissolve is done
+      show(bg, XFADE);
+    };
+    await whenEnded(sceneVideo, () => {
+      if (sceneVideo.duration - sceneVideo.currentTime <= XFADE) toChoice();
+    });
+    toChoice();
+  }
+
+  // 2. A click on a spot: the picture dissolves into that option's video, which fades
+  //    to black in its last seconds.
+  let choosing = false;
+  async function choose(n) {
+    if (stateOf() !== 'decision' || choosing) return;
+    choosing = true;
+    const v = optVideo[n];
+    setState('loading');                        // spots fade away
+    try { v.currentTime = 0; v.volume = 1; await playVideo(v); }
+    catch (e) { console.warn('Playback blocked', e); choosing = false; setState('decision'); return; }
+    setState('branch');
+    show(v, XFADE);
+
+    await whenEnded(v, () => {
+      const remaining = v.duration - v.currentTime;
+      if (remaining <= FADE_SECONDS) {
+        fade.classList.add('on');
+        v.volume = Math.max(0, Math.min(1, remaining / FADE_SECONDS));   // sound fades with the picture
+      }
+    });
+    showEnding(n);
+  }
+
+  // 3. Black screen + centred text.
+  async function showEnding(n) {
+    const { text, tone } = ENDINGS[n];
+    fade.classList.add('on');
+    endText.textContent = text;
+    end.dataset.tone = tone;
+    setState('end');
+    await wait(500);
+    end.classList.add('show');
+    await wait(2200);
+    if (stateOf() === 'end') againBtn.focus({ preventScroll: true });
+  }
+
+  // 4. Try again: the text fades out, then the black dissolves away to reveal the choice.
+  async function backToChoice() {
+    end.classList.remove('show');
+    await wait(700);
+    seq++;                                      // cancel any pending layer clean-up
+    layers.forEach(l => { l.classList.remove('on'); l.style.zIndex = 0; });
+    allVideos.forEach(v => { v.pause(); v.currentTime = 0; v.volume = 1; });
+    show(bg, 0);                                // picture swapped while the screen is still black
+    choosing = false;
+    setState('decision');
+    fade.classList.remove('on');                // the black dissolves away
+  }
+
+  /* ---- wiring ---- */
+  startBtn.addEventListener('click', runScene);
+  againBtn.addEventListener('click', backToChoice);
+  document.querySelectorAll('.hotspot').forEach(el =>
+    el.addEventListener('click', () => choose(Number(el.dataset.choice))));
+  document.addEventListener('keydown', e => {
+    if (stateOf() === 'decision' && (e.key === '1' || e.key === '2')) choose(Number(e.key));
+  });
+})();
+</script>
+</body>
+</html>
